@@ -37,12 +37,8 @@ AF-A0A0A7M1B3-F1-model_v4_TED02	2.40.30.10	92.63	5o8wA02
 
 
 import csv
-import logging
 import re
 import click
-
-logging.basicConfig(level="INFO")
-LOG = logging.getLogger(__name__)
 
 
 @click.command()
@@ -70,60 +66,109 @@ LOG = logging.getLogger(__name__)
 @click.option("--force", is_flag=True, default=False, help="callously ignore warnings")
 def run(input, column, output_stub, output_suffix, delimiter, use_headers, force):
 
-    seen_unique_fields = dict()
+    app = CsvSplitter(
+        input_file=input,
+        column=column,
+        output_stub=output_stub,
+        output_suffix=output_suffix,
+        delimiter=delimiter,
+        use_headers=use_headers,
+        force=force,
+    )
+    app.run()
 
-    with open(input, "r") as in_fh:
-        in_reader = get_csv_reader(in_fh, delimiter=delimiter)
-        if use_headers:
-            headers = next(in_reader)
-        last_unique_field = None
-        current_unique_field = None
-        out_fh = None
-        out_writer = None
-        for line_count, cols in enumerate(in_reader, 1):
-            current_unique_field = cols[column - 1]
 
-            # swap output file handles
-            if current_unique_field != last_unique_field:
-                if current_unique_field in seen_unique_fields:
-                    msg = f"Already seen field '{current_unique_field}', you probably want to sort the input file before running this script (line: {line_count})"
-                    if force:
-                        LOG.warning(msg)
-                    else:
-                        raise KeyError(msg)
+class CsvSplitter:
+    """
+    Splits a CSV into multiple files based on the contents of a specified column.
+    """
 
-                if last_unique_field:
-                    LOG.info(
-                        f" ... wrote {seen_unique_fields[last_unique_field]} records (field: {last_unique_field})"
-                    )
+    def __init__(
+        self,
+        input_file,
+        column,
+        output_stub,
+        output_suffix,
+        delimiter,
+        use_headers,
+        force,
+    ):
+        self.input_file = input_file
+        self.column = column
+        self.output_stub = output_stub
+        self.output_suffix = output_suffix
+        self.delimiter = delimiter
+        self.use_headers = use_headers
+        self.force = force
 
-                out_file = get_output_filename(
-                    output_stub, protect_filename(current_unique_field), output_suffix
-                )
-                LOG.info(f"Writing to {out_file} (field: {current_unique_field})")
-                if out_fh:
-                    out_fh.close()
-                out_fh = open(out_file, "w")
-                out_writer = get_csv_writer(out_fh, delimiter=delimiter)
+        self._headers = None
+        self._last_field = None
+        self._records_by_field = dict()
+        self._out_fh = None
+        self._out_writer = None
 
-                if current_unique_field not in seen_unique_fields:
-                    seen_unique_fields[current_unique_field] = 0
-                    if use_headers:
-                        out_writer.writerow(headers)
+    def run(self):
 
-            seen_unique_fields[current_unique_field] += 1
+        with open(self.input_file, "r") as in_fh:
+            in_reader = get_csv_reader(in_fh, delimiter=self.delimiter)
+            if self.use_headers:
+                self._headers = next(in_reader)
 
-            out_writer.writerow(cols)
+            current_field = None
+            for line_count, cols in enumerate(in_reader, 1):
+                current_field = cols[self.column - 1]
 
-            last_unique_field = current_unique_field
+                # swap output writer when we encounter a different field
+                if current_field != self._last_field:
+                    if current_field in self._records_by_field:
+                        msg = f"Already seen field '{current_field}', you probably want to sort the input file before running this script (line: {line_count})"
+                        if self.force:
+                            click.echo(msg, err=True)
+                        else:
+                            raise KeyError(msg)
 
-        if out_fh:
-            out_fh.close()
+                    self.close_output_file()
 
-        total_records = sum(seen_unique_fields.values())
-        total_files = len(seen_unique_fields.keys())
-        LOG.info(f"Wrote {total_records} records to {total_files} files")
-        LOG.info("Done")
+                    self.init_output_file(current_field)
+
+                self._records_by_field[current_field] += 1
+
+                self._out_writer.writerow(cols)
+
+                self._last_field = current_field
+
+            self.close_output_file()
+
+            total_records = sum(self._records_by_field.values())
+            total_files = len(self._records_by_field.keys())
+
+            click.echo(f"Wrote {total_records} records to {total_files} files")
+            click.echo("Done")
+
+    def close_output_file(self):
+        if self._last_field:
+            click.echo(
+                f" ... wrote {self._records_by_field[self._last_field]} records (field: {self._last_field})"
+            )
+
+        if self._out_fh:
+            self._out_fh.close()
+
+    def init_output_file(self, current_field):
+        out_file = get_output_filename(
+            self.output_stub,
+            protect_filename(current_field),
+            self.output_suffix,
+        )
+        click.echo(f"Writing to {out_file} (field: {current_field})")
+
+        self._out_fh = open(out_file, "w")
+        self._out_writer = get_csv_writer(self._out_fh, delimiter=self.delimiter)
+
+        if current_field not in self._records_by_field:
+            self._records_by_field[current_field] = 0
+            if self.use_headers and self._headers:
+                self._out_writer.writerow(self._headers)
 
 
 def get_csv_reader(filehandle, delimiter):
