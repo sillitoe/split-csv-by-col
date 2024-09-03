@@ -2,7 +2,7 @@
 
 Script that splits a CSV file into multiple files based on the contents of a specified column.
 
-For large files, it is recommended to sort the input file by the column you want to split on.
+To avoid IO issues, it expects that the input file has already been sorted by the column to be split on.
 
 ## Usage
 
